@@ -1,0 +1,806 @@
+import React, { useState, useEffect, useMemo, useRef } from &#039;react&#039;;
+import { 
+  Search, 
+  FolderOpen, 
+  FileText, 
+  Eye, 
+  Grid, 
+  List, 
+  X, 
+  Download, 
+  Trash2,
+  RefreshCw,
+  Tag,
+  Edit2,
+  Link as LinkIcon,
+  Lock,
+  ExternalLink,
+  ChevronLeft,
+  ChevronRight,
+  Folder,
+  Copy,
+  Table,
+  CheckCircle,
+  AlertTriangle,
+  AlertCircle,
+  FileWarning,
+  RefreshCcw
+} from &#039;lucide-react&#039;;
+
+/**
+ * Ứng dụng Quản l&yacute; Quy tr&igrave;nh Cửa h&agrave;ng v5.7
+ * - NEW: Sync dữ liệu theo Link Google Sheet (X&oacute;a cũ nạp mới dựa tr&ecirc;n nguồn Sheet)
+ * - NEW: N&uacute;t Download trực tiếp cho cả Link Drive v&agrave; File Local
+ * - FIX: N&uacute;t X&oacute;a hoạt động ch&iacute;nh x&aacute;c (Z-index fix)
+ */
+
+// --- Helper: Login Screen ---
+const LoginScreen = ({ onLogin }) =&gt; {
+  const [password, setPassword] = useState(&#039;&#039;);
+  const [error, setError] = useState(false);
+
+  const handleLogin = (e) =&gt; {
+    e.preventDefault();
+    if (password === &#039;123456&#039; || password === &#039;admin&#039;) {
+      onLogin();
+    } else {
+      setError(true);
+    }
+  };
+
+  return (
+    &lt;div className=&quot;fixed inset-0 z-[100] bg-slate-900 flex items-center justify-center p-4&quot;&gt;
+      &lt;div className=&quot;bg-white w-full max-w-md p-8 rounded-2xl shadow-2xl animate-in fade-in zoom-in duration-300&quot;&gt;
+        &lt;div className=&quot;flex justify-center mb-6&quot;&gt;
+          &lt;div className=&quot;bg-blue-100 p-4 rounded-full&quot;&gt;
+            &lt;Lock className=&quot;text-blue-600&quot; size={32} /&gt;
+          &lt;/div&gt;
+        &lt;/div&gt;
+        &lt;h2 className=&quot;text-2xl font-bold text-center text-slate-800 mb-2&quot;&gt;Đăng nhập hệ thống&lt;/h2&gt;
+        &lt;p className=&quot;text-center text-slate-500 mb-6&quot;&gt;Nhập mật khẩu để truy cập quy tr&igrave;nh&lt;/p&gt;
+        
+        &lt;form onSubmit={handleLogin} className=&quot;space-y-4&quot;&gt;
+          &lt;div&gt;
+            &lt;input 
+              type=&quot;password&quot; 
+              value={password}
+              onChange={(e) =&gt; {setPassword(e.target.value); setError(false);}}
+              className=&quot;w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none transition&quot;
+              placeholder=&quot;Mật khẩu truy cập&quot;
+              autoFocus
+            /&gt;
+            {error &amp;&amp; &lt;p className=&quot;text-red-500 text-sm mt-2&quot;&gt;Mật khẩu kh&ocirc;ng đ&uacute;ng. Vui l&ograve;ng thử lại.&lt;/p&gt;}
+          &lt;/div&gt;
+          &lt;button 
+            type=&quot;submit&quot;
+            className=&quot;w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg transition shadow-lg shadow-blue-200&quot;
+          &gt;
+            Mở kh&oacute;a
+          &lt;/button&gt;
+        &lt;/form&gt;
+        &lt;p className=&quot;text-center text-xs text-slate-400 mt-6&quot;&gt;Secure Local Process Manager&lt;/p&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  );
+};
+
+// --- Helper Functions ---
+const analyzeLinkType = (url) =&gt; {
+    if (!url || !url.startsWith(&#039;http&#039;)) return &#039;error&#039;;
+    if (url.includes(&#039;id=&#039;) || url.includes(&#039;preview=&#039;) || url.includes(&#039;open=&#039;)) return &#039;file-link&#039;;
+    if (url.includes(&#039;/folders/&#039;) || url.includes(&#039;/drive/u/&#039;) || url.includes(&#039;drive.google.com/drive/folders&#039;)) return &#039;folder-link&#039;;
+    return &#039;file-link&#039;;
+};
+
+const getDriveId = (url) =&gt; {
+    if (!url) return null;
+    const idParamMatch = url.match(/[?&amp;]id=([a-zA-Z0-9-_]+)/);
+    if (idParamMatch &amp;&amp; idParamMatch[1]) return idParamMatch[1];
+    const pathIdMatch = url.match(/\/d\/([a-zA-Z0-9-_]+)/);
+    if (pathIdMatch &amp;&amp; pathIdMatch[1]) return pathIdMatch[1];
+    return null;
+};
+
+// --- Helper: Modal th&ecirc;m Link (Đơn, H&agrave;ng loạt &amp; Google Sheet) ---
+const AddLinkModal = ({ isOpen, onClose, onAdd, onAddBulk, onSyncSheet }) =&gt; {
+  const [mode, setMode] = useState(&#039;single&#039;); 
+  const [name, setName] = useState(&#039;&#039;);
+  const [url, setUrl] = useState(&#039;&#039;);
+  const [category, setCategory] = useState(&#039;&#039;);
+  const [bulkText, setBulkText] = useState(&#039;&#039;);
+  const [sheetUrl, setSheetUrl] = useState(&#039;&#039;);
+  const [isFetchingSheet, setIsFetchingSheet] = useState(false);
+
+  if (!isOpen) return null;
+
+  const handleSingleSubmit = () =&gt; {
+    if (name &amp;&amp; url) {
+      if (!url.startsWith(&#039;http&#039;)) {
+        alert(&quot;Đường dẫn (Link) kh&ocirc;ng hợp lệ.&quot;);
+        return;
+      }
+      const type = analyzeLinkType(url);
+      onAdd({ 
+        name, 
+        url, 
+        category: category.toUpperCase() || &#039;LINK&#039;,
+        type: type
+      });
+      resetForm();
+      onClose();
+    }
+  };
+
+  const handleBulkSubmit = () =&gt; {
+    if (!bulkText.trim()) return;
+    const lines = bulkText.split(&#039;\n&#039;);
+    processLines(lines);
+    resetForm();
+    onClose();
+  };
+
+  const parseCSVLine = (text) =&gt; {
+    const re_value = /(?!\s*$)\s*(?:&#039;([^&#039;\\]*(?:\\[\S\s][^&#039;\\]*)*)&#039;|&quot;([^&quot;\\]*(?:\\[\S\s][^&quot;\\]*)*)&quot;|([^,&#039;&quot;\s\\]*(?:\s+[^,&#039;&quot;\s\\]+)*))\s*(?:,|$)/g;
+    const a = [];
+    text.replace(re_value, function(m0, m1, m2, m3) {
+        if (m1 !== undefined) a.push(m1.replace(/\\&#039;/g, &quot;&#039;&quot;));
+        else if (m2 !== undefined) a.push(m2.replace(/\\&quot;/g, &#039;&quot;&#039;));
+        else if (m3 !== undefined) a.push(m3);
+        return &#039;&#039;;
+    });
+    if (/,\s*$/.test(text)) a.push(&#039;&#039;);
+    return a;
+  };
+
+  const handleSheetSubmit = async () =&gt; {
+    if (!sheetUrl.trim()) return;
+    setIsFetchingSheet(true);
+
+    try {
+        const match = sheetUrl.match(/\/d\/([a-zA-Z0-9-_]+)/);
+        if (!match || match.length &lt; 2) {
+            alert(&quot;Link Google Sheet kh&ocirc;ng hợp lệ.&quot;);
+            setIsFetchingSheet(false);
+            return;
+        }
+        const sheetId = match[1];
+        const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`;
+
+        const response = await fetch(csvUrl);
+        if (!response.ok) {
+            throw new Error(&quot;Kh&ocirc;ng thể truy cập file Sheet. H&atilde;y đảm bảo đ&atilde; Share &#039;Anyone with the link&#039;.&quot;);
+        }
+
+        const csvText = await response.text();
+        const rows = csvText.split(/\r?\n/);
+        const dataRows = rows.slice(1);
+        
+        const newItems = [];
+        let invalidCount = 0;
+
+        dataRows.forEach(row =&gt; {
+            let cols = parseCSVLine(row);
+            if (!cols || cols.length === 0) cols = row.split(&#039;,&#039;).map(c =&gt; c.trim());
+
+            if (cols &amp;&amp; cols.length &gt;= 3) {
+                const cleanName = cols[0]?.replace(/^&quot;|&quot;$/g, &#039;&#039;).trim();
+                const cleanTag = cols[1]?.replace(/^&quot;|&quot;$/g, &#039;&#039;).trim();
+                const cleanLink = cols[2]?.replace(/^&quot;|&quot;$/g, &#039;&#039;).trim();
+
+                if (cleanName) {
+                     if (!cleanLink || !cleanLink.startsWith(&#039;http&#039;)) {
+                        invalidCount++;
+                        newItems.push({
+                            id: `l-error-${Date.now()}-${Math.random()}`,
+                            name: cleanName,
+                            url: &#039;&#039;, 
+                            originalText: cleanLink,
+                            category: &#039;LỖI_LINK&#039;,
+                            isLink: true,
+                            linkType: &#039;error&#039;,
+                            size: 0,
+                            lastModified: Date.now(),
+                            sourceSheet: sheetUrl // Đ&aacute;nh dấu nguồn gốc
+                        });
+                     } else {
+                         const type = analyzeLinkType(cleanLink);
+                         newItems.push({
+                            id: `l-sheet-${Date.now()}-${Math.random()}`,
+                            name: cleanName,
+                            url: cleanLink,
+                            category: (cleanTag || &#039;SHEET&#039;).toUpperCase(),
+                            isLink: true,
+                            linkType: type === &#039;folder-link&#039; ? &#039;folder&#039; : &#039;file&#039;,
+                            size: 0,
+                            lastModified: Date.now(),
+                            sourceSheet: sheetUrl // Đ&aacute;nh dấu nguồn gốc
+                        });
+                     }
+                }
+            }
+        });
+
+        // Gọi h&agrave;m Sync thay v&igrave; Add Bulk th&ocirc;ng thường
+        if (newItems.length &gt; 0 || dataRows.length === 0) {
+            onSyncSheet(sheetUrl, newItems);
+            
+            if (invalidCount &gt; 0) {
+                alert(`Đ&atilde; đồng bộ xong! C&oacute; ${invalidCount} d&ograve;ng bị lỗi link trong Sheet.`);
+            } else {
+                alert(`Đ&atilde; đồng bộ th&agrave;nh c&ocirc;ng ${newItems.length} quy tr&igrave;nh từ Sheet!`);
+            }
+            resetForm();
+            onClose();
+        } 
+
+    } catch (error) {
+        console.error(error);
+        alert(`Lỗi: ${error.message}`);
+    } finally {
+        setIsFetchingSheet(false);
+    }
+  };
+
+  const processLines = (lines) =&gt; {
+    const newItems = [];
+    lines.forEach(line =&gt; {
+      const parts = line.split(&#039;|&#039;).map(p =&gt; p.trim());
+      if (parts.length &gt;= 2) {
+        const url = parts[1];
+        if (url.startsWith(&#039;http&#039;)) {
+            const type = analyzeLinkType(url);
+            newItems.push({
+                id: `l-bulk-${Date.now()}-${Math.random()}`,
+                name: parts[0],
+                url: url,
+                category: (parts[2] || &#039;NHAP_NHANH&#039;).toUpperCase(),
+                isLink: true,
+                linkType: type === &#039;folder-link&#039; ? &#039;folder&#039; : &#039;file&#039;,
+                size: 0,
+                lastModified: Date.now()
+            });
+        }
+      }
+    });
+    onAddBulk(newItems);
+  };
+
+  const resetForm = () =&gt; {
+      setName(&#039;&#039;); setUrl(&#039;&#039;); setCategory(&#039;&#039;); setBulkText(&#039;&#039;); setSheetUrl(&#039;&#039;);
+  };
+
+  return (
+    &lt;div className=&quot;fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200&quot;&gt;
+      &lt;div className=&quot;bg-white w-full max-w-lg rounded-xl shadow-xl overflow-hidden flex flex-col max-h-[90vh]&quot;&gt;
+        &lt;div className=&quot;flex border-b border-slate-200&quot;&gt;
+            &lt;button className={`flex-1 py-3 font-medium text-xs sm:text-sm flex justify-center items-center gap-1 ${mode === &#039;single&#039; ? &#039;bg-white text-blue-600 border-b-2 border-blue-600&#039; : &#039;bg-slate-50 text-slate-500&#039;}`} onClick={() =&gt; setMode(&#039;single&#039;)}&gt;&lt;LinkIcon size={14}/&gt; 1 Link&lt;/button&gt;
+            &lt;button className={`flex-1 py-3 font-medium text-xs sm:text-sm flex justify-center items-center gap-1 ${mode === &#039;sheet&#039; ? &#039;bg-white text-green-600 border-b-2 border-green-600&#039; : &#039;bg-slate-50 text-slate-500&#039;}`} onClick={() =&gt; setMode(&#039;sheet&#039;)}&gt;&lt;Table size={14}/&gt; Google Sheet (Sync)&lt;/button&gt;
+            &lt;button className={`flex-1 py-3 font-medium text-xs sm:text-sm flex justify-center items-center gap-1 ${mode === &#039;bulk&#039; ? &#039;bg-white text-slate-600 border-b-2 border-slate-600&#039; : &#039;bg-slate-50 text-slate-500&#039;}`} onClick={() =&gt; setMode(&#039;bulk&#039;)}&gt;&lt;Copy size={14}/&gt; Copy Paste&lt;/button&gt;
+        &lt;/div&gt;
+
+        &lt;div className=&quot;p-6 overflow-y-auto&quot;&gt;
+            {mode === &#039;single&#039; &amp;&amp; (
+                &lt;div className=&quot;space-y-4&quot;&gt;
+                    &lt;div&gt;&lt;label className=&quot;block text-sm font-medium text-slate-700 mb-1&quot;&gt;T&ecirc;n quy tr&igrave;nh&lt;/label&gt;&lt;input type=&quot;text&quot; className=&quot;w-full p-2.5 border rounded-lg&quot; value={name} onChange={e =&gt; setName(e.target.value)} placeholder=&quot;VD: Quy tr&igrave;nh Kho&quot; /&gt;&lt;/div&gt;
+                    &lt;div&gt;&lt;label className=&quot;block text-sm font-medium text-slate-700 mb-1&quot;&gt;Link Drive&lt;/label&gt;&lt;input type=&quot;text&quot; className=&quot;w-full p-2.5 border rounded-lg&quot; value={url} onChange={e =&gt; setUrl(e.target.value)} placeholder=&quot;https://...&quot; /&gt;&lt;/div&gt;
+                    &lt;div&gt;&lt;label className=&quot;block text-sm font-medium text-slate-700 mb-1&quot;&gt;Tag&lt;/label&gt;&lt;input type=&quot;text&quot; className=&quot;w-full p-2.5 border rounded-lg uppercase&quot; value={category} onChange={e =&gt; setCategory(e.target.value)} placeholder=&quot;VD: KHO&quot; /&gt;&lt;/div&gt;
+                &lt;/div&gt;
+            )}
+            {mode === &#039;sheet&#039; &amp;&amp; (
+                &lt;div className=&quot;space-y-4&quot;&gt;
+                     &lt;div className=&quot;bg-green-50 p-4 rounded-lg border border-green-100 text-sm text-green-800&quot;&gt;
+                        &lt;p className=&quot;font-bold mb-2 flex items-center gap-2 text-green-700&quot;&gt;&lt;RefreshCcw size={16}/&gt; Chế độ Đồng bộ (Sync):&lt;/p&gt;
+                        &lt;p className=&quot;mb-2&quot;&gt;Khi bạn nhập Link Google Sheet v&agrave;o đ&acirc;y, hệ thống sẽ &lt;strong&gt;x&oacute;a tất cả c&aacute;c mục cũ&lt;/strong&gt; được nhập từ Sheet n&agrave;y trước đ&oacute; v&agrave; thay thế bằng danh s&aacute;ch mới nhất.&lt;/p&gt;
+                        &lt;p className=&quot;text-xs text-green-700&quot;&gt;Điều n&agrave;y gi&uacute;p danh s&aacute;ch tr&ecirc;n web lu&ocirc;n khớp với file Excel của bạn.&lt;/p&gt;
+                    &lt;/div&gt;
+                    &lt;div&gt;&lt;label className=&quot;block text-sm font-medium text-slate-700 mb-1&quot;&gt;Link Google Sheet:&lt;/label&gt;&lt;input type=&quot;text&quot; className=&quot;w-full p-3 border rounded-lg&quot; placeholder=&quot;https://docs.google.com/spreadsheets/...&quot; value={sheetUrl} onChange={e =&gt; setSheetUrl(e.target.value)}/&gt;&lt;/div&gt;
+                &lt;/div&gt;
+            )}
+            {mode === &#039;bulk&#039; &amp;&amp; (
+                &lt;div className=&quot;space-y-4&quot;&gt;
+                    &lt;div&gt;&lt;label className=&quot;block text-sm font-medium text-slate-700 mb-1&quot;&gt;D&aacute;n text (T&ecirc;n | Link | Tag)&lt;/label&gt;&lt;textarea className=&quot;w-full p-3 border rounded-lg h-32 font-mono text-sm&quot; placeholder={&quot;Quy tr&igrave;nh A | http... | KHO&quot;} value={bulkText} onChange={e =&gt; setBulkText(e.target.value)}&gt;&lt;/textarea&gt;&lt;/div&gt;
+                &lt;/div&gt;
+            )}
+        &lt;/div&gt;
+
+        &lt;div className=&quot;p-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-2&quot;&gt;
+          &lt;button onClick={onClose} className=&quot;px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg&quot;&gt;Hủy&lt;/button&gt;
+          {mode === &#039;single&#039; &amp;&amp; &lt;button onClick={handleSingleSubmit} className=&quot;px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700&quot;&gt;Th&ecirc;m&lt;/button&gt;}
+          {mode === &#039;sheet&#039; &amp;&amp; &lt;button onClick={handleSheetSubmit} disabled={isFetchingSheet} className=&quot;px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50&quot;&gt;{isFetchingSheet ? &#039;Đang đọc &amp; Đồng bộ...&#039; : &#039;Đồng bộ Ngay&#039;}&lt;/button&gt;}
+          {mode === &#039;bulk&#039; &amp;&amp; &lt;button onClick={handleBulkSubmit} className=&quot;px-6 py-2 bg-slate-700 text-white rounded-lg hover:bg-slate-800&quot;&gt;Nhập Text&lt;/button&gt;}
+        &lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  );
+};
+
+// --- Helper: Tag &amp; Link Edit Modal ---
+const EditModal = ({ file, isOpen, onClose, onSave }) =&gt; {
+  const [tags, setTags] = useState(&#039;&#039;);
+  const [link, setLink] = useState(&#039;&#039;);
+
+  useEffect(() =&gt; { 
+      if (file) {
+          setTags(file.category || &#039;&#039;); 
+          setLink(file.url || &#039;&#039;);
+      }
+  }, [file]);
+
+  if (!isOpen || !file) return null;
+  
+  return (
+    &lt;div className=&quot;fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200&quot;&gt;
+      &lt;div className=&quot;bg-white w-full max-w-md rounded-xl shadow-xl p-6&quot;&gt;
+        &lt;h3 className=&quot;text-lg font-bold mb-4 flex items-center gap-2&quot;&gt;&lt;Edit2 size={18}/&gt; Chỉnh sửa th&ocirc;ng tin&lt;/h3&gt;
+        
+        &lt;div className=&quot;mb-4&quot;&gt;
+            &lt;label className=&quot;block text-xs font-medium text-slate-500 mb-1&quot;&gt;Nh&oacute;m / Tag&lt;/label&gt;
+            &lt;input type=&quot;text&quot; value={tags} onChange={(e) =&gt; setTags(e.target.value)} className=&quot;w-full p-2 border rounded-lg uppercase&quot; /&gt;
+        &lt;/div&gt;
+
+        {file.isLink &amp;&amp; (
+            &lt;div className=&quot;mb-4&quot;&gt;
+                &lt;label className=&quot;block text-xs font-medium text-slate-500 mb-1&quot;&gt;Đường dẫn (Link)&lt;/label&gt;
+                &lt;input type=&quot;text&quot; value={link} onChange={(e) =&gt; setLink(e.target.value)} className=&quot;w-full p-2 border rounded-lg text-sm&quot; placeholder=&quot;https://...&quot; /&gt;
+            &lt;/div&gt;
+        )}
+
+        &lt;div className=&quot;flex justify-end gap-2&quot;&gt;
+          &lt;button onClick={onClose} className=&quot;px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg&quot;&gt;Hủy&lt;/button&gt;
+          &lt;button onClick={() =&gt; onSave(file.id, tags, link)} className=&quot;px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700&quot;&gt;Lưu&lt;/button&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  );
+};
+
+// --- Core: PDF Viewer ---
+const PdfViewer = ({ file }) =&gt; {
+  const canvasRef = useRef(null);
+  const [pdfDoc, setPdfDoc] = useState(null);
+  const [pageNum, setPageNum] = useState(1);
+  const [scale, setScale] = useState(1.5);
+  const [loading, setLoading] = useState(true);
+  const [renderError, setRenderError] = useState(null);
+
+  useEffect(() =&gt; {
+    const loadPdf = async () =&gt; {
+      setLoading(true);
+      setRenderError(null);
+      try {
+        if (!window.pdfjsLib) return;
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = &#039;https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js&#039;;
+        
+        const arrayBuffer = await file.arrayBuffer();
+        const loadingTask = window.pdfjsLib.getDocument({ data: arrayBuffer });
+        const doc = await loadingTask.promise;
+        setPdfDoc(doc); setPageNum(1); setLoading(false);
+      } catch (error) { 
+          console.error(error); 
+          setRenderError(&quot;Kh&ocirc;ng thể đọc file PDF n&agrave;y. C&oacute; thể file bị lỗi.&quot;);
+          setLoading(false); 
+      }
+    };
+    loadPdf();
+  }, [file]);
+
+  useEffect(() =&gt; {
+    const renderPage = async () =&gt; {
+      if (!pdfDoc || !canvasRef.current) return;
+      try {
+        const page = await pdfDoc.getPage(pageNum);
+        const viewport = page.getViewport({ scale });
+        const canvas = canvasRef.current;
+        const context = canvas.getContext(&#039;2d&#039;);
+        canvas.height = viewport.height; canvas.width = viewport.width;
+        await page.render({ canvasContext: context, viewport: viewport }).promise;
+      } catch (err) { console.error(&quot;Render page error&quot;, err); }
+    };
+    renderPage();
+  }, [pdfDoc, pageNum, scale]);
+
+  if (loading) return &lt;div className=&quot;text-white text-center p-4&quot;&gt;Đang tải PDF...&lt;/div&gt;;
+  if (renderError) return &lt;div className=&quot;text-white text-center p-4&quot;&gt;{renderError}&lt;/div&gt;;
+
+  return (
+    &lt;div className=&quot;flex flex-col items-center w-full h-full bg-slate-500 overflow-y-auto p-4&quot;&gt;
+      &lt;div className=&quot;sticky top-0 z-10 bg-slate-800 text-white p-2 rounded-lg mb-4 flex items-center gap-4 shadow-lg&quot;&gt;
+        &lt;button disabled={pageNum &lt;= 1} onClick={() =&gt; setPageNum(p =&gt; p - 1)} className=&quot;disabled:opacity-30 hover:bg-slate-700 p-1 rounded&quot;&gt;&lt;ChevronLeft/&gt;&lt;/button&gt;
+        &lt;span className=&quot;text-sm&quot;&gt;Trang {pageNum}/{pdfDoc?.numPages}&lt;/span&gt;
+        &lt;button disabled={pageNum &gt;= pdfDoc?.numPages} onClick={() =&gt; setPageNum(p =&gt; p + 1)} className=&quot;disabled:opacity-30 hover:bg-slate-700 p-1 rounded&quot;&gt;&lt;ChevronRight/&gt;&lt;/button&gt;
+        &lt;div className=&quot;w-px h-4 bg-slate-600&quot;&gt;&lt;/div&gt;
+        &lt;button onClick={() =&gt; setScale(s =&gt; Math.max(0.5, s - 0.2))} className=&quot;px-2 hover:bg-slate-700 rounded&quot;&gt;-&lt;/button&gt;
+        &lt;span className=&quot;text-xs&quot;&gt;{Math.round(scale * 100)}%&lt;/span&gt;
+        &lt;button onClick={() =&gt; setScale(s =&gt; Math.min(3, s + 0.2))} className=&quot;px-2 hover:bg-slate-700 rounded&quot;&gt;+&lt;/button&gt;
+      &lt;/div&gt;
+      &lt;canvas ref={canvasRef} className=&quot;shadow-2xl rounded-sm max-w-full&quot; /&gt;
+    &lt;/div&gt;
+  );
+};
+
+// --- Core: File Preview Modal ---
+const FilePreviewModal = ({ file, onClose }) =&gt; {
+  const containerRef = useRef(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const getEmbedUrl = (url) =&gt; {
+      if (!url || !url.startsWith(&#039;http&#039;)) return null;
+      const fileId = getDriveId(url);
+      if (!fileId &amp;&amp; (url.includes(&#039;/folders/&#039;) || url.includes(&#039;drive.google.com/drive/u/&#039;))) return null;
+      if (fileId) {
+          if (url.includes(&#039;spreadsheets&#039;)) return `https://docs.google.com/spreadsheets/d/${fileId}/preview`;
+          if (url.includes(&#039;document&#039;)) return `https://docs.google.com/document/d/${fileId}/preview`;
+          if (url.includes(&#039;presentation&#039;)) return `https://docs.google.com/presentation/d/${fileId}/preview`;
+          return `https://drive.google.com/file/d/${fileId}/preview`;
+      }
+      return url.replace(/\/view.*$/, &#039;/preview&#039;).replace(/\/edit.*$/, &#039;/preview&#039;).replace(/\/open.*$/, &#039;/preview&#039;).replace(/\/copy.*$/, &#039;/preview&#039;);
+  };
+
+  const embedUrl = file.isLink ? getEmbedUrl(file.url) : null;
+  const isFolderLink = file.isLink &amp;&amp; (file.linkType === &#039;folder&#039; || !embedUrl); 
+  const isBrokenLink = file.isLink &amp;&amp; !file.url; 
+
+  useEffect(() =&gt; {
+    if (!file) return;
+    if (file.isLink) { setLoading(false); return; }
+    setLoading(true); setError(null);
+    const renderFile = async () =&gt; {
+      try {
+        const extension = file.name.split(&#039;.&#039;).pop().toLowerCase();
+        if (extension === &#039;pdf&#039; || file.name.endsWith(&#039;.pdf&#039;)) { setLoading(false); return; }
+        if (extension === &#039;docx&#039;) {
+          if (!window.docx) throw new Error(&quot;Thư viện DOCX lỗi.&quot;);
+          if (containerRef.current) containerRef.current.innerHTML = &#039;&#039;;
+          await window.docx.renderAsync(file, containerRef.current, null, { inWrapper: false, ignoreWidth: false, experimental: true, breakPages: true, useBase64URL: true });
+          setLoading(false); return;
+        }
+        if ([&#039;xlsx&#039;, &#039;xls&#039;, &#039;csv&#039;].includes(extension)) {
+             if (!window.XLSX) throw new Error(&quot;Thư viện Excel lỗi.&quot;);
+             const reader = new FileReader();
+             reader.onload = (e) =&gt; {
+                 const data = new Uint8Array(e.target.result);
+                 const workbook = window.XLSX.read(data, {type: &#039;array&#039;});
+                 const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+                 const html = window.XLSX.utils.sheet_to_html(worksheet, { id: &quot;excel-table&quot; });
+                 if (containerRef.current) containerRef.current.innerHTML = `&lt;div style=&quot;padding:20px; overflow:auto; background:white;&quot;&gt;${html}&lt;/div&gt;`;
+                 setLoading(false);
+             };
+             reader.readAsArrayBuffer(file); return;
+        }
+        throw new Error(&quot;Kh&ocirc;ng hỗ trợ preview.&quot;);
+      } catch (err) { setError(err.message); setLoading(false); }
+    };
+    setTimeout(renderFile, 100);
+  }, [file]);
+
+  if (!file) return null;
+  const isPdf = file.name?.toLowerCase().endsWith(&#039;.pdf&#039;);
+
+  return (
+    &lt;div className=&quot;fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 animate-in fade-in duration-200&quot;&gt;
+      &lt;div className=&quot;bg-white w-full h-full max-w-[95vw] max-h-[95vh] rounded-xl shadow-2xl flex flex-col overflow-hidden&quot;&gt;
+        &lt;div className=&quot;flex items-center justify-between px-4 py-3 bg-slate-100 border-b border-slate-200 shrink-0&quot;&gt;
+          &lt;h3 className=&quot;font-bold text-slate-800 truncate max-w-md flex items-center gap-2&quot;&gt;
+            {file.isLink &amp;&amp; &lt;ExternalLink size={16} className=&quot;text-blue-600&quot;/&gt;}
+            {file.name || &quot;Kh&ocirc;ng t&ecirc;n&quot;}
+          &lt;/h3&gt;
+          &lt;div className=&quot;flex items-center gap-2&quot;&gt;
+             {file.isLink &amp;&amp; !isBrokenLink &amp;&amp; (
+                &lt;a href={file.url} target=&quot;_blank&quot; rel=&quot;noopener noreferrer&quot; className=&quot;px-3 py-1.5 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg text-sm font-medium flex items-center gap-1&quot;&gt;
+                   &lt;ExternalLink size={14} /&gt; Mở Tab Mới
+                &lt;/a&gt;
+             )}
+             {!file.isLink &amp;&amp; (
+                &lt;a href={URL.createObjectURL(file)} download={file.name} className=&quot;p-2 hover:bg-slate-200 rounded-lg text-slate-600 flex items-center gap-1&quot;&gt;
+                  &lt;Download size={18} /&gt; &lt;span className=&quot;hidden sm:inline&quot;&gt;Tải về&lt;/span&gt;
+                &lt;/a&gt;
+             )}
+            &lt;button onClick={onClose} className=&quot;p-2 hover:bg-red-100 text-slate-500 hover:text-red-600 rounded-lg&quot;&gt;&lt;X size={22} /&gt;&lt;/button&gt;
+          &lt;/div&gt;
+        &lt;/div&gt;
+        &lt;div className=&quot;flex-1 bg-slate-200 relative overflow-hidden flex flex-col&quot;&gt;
+            {loading &amp;&amp; !isPdf &amp;&amp; !file.isLink &amp;&amp; &lt;div className=&quot;absolute inset-0 flex items-center justify-center bg-white/50 z-10&quot;&gt;&lt;div className=&quot;w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin&quot;&gt;&lt;/div&gt;&lt;/div&gt;}
+            {file.isLink ? (
+                isBrokenLink ? &lt;div className=&quot;flex flex-col items-center justify-center h-full text-center p-8 bg-red-50&quot;&gt;&lt;FileWarning size={48} className=&quot;text-red-500 mb-4&quot; /&gt;&lt;h3 className=&quot;text-xl font-bold text-red-700 mb-2&quot;&gt;Đường dẫn bị lỗi&lt;/h3&gt;&lt;/div&gt; : 
+                isFolderLink ? &lt;div className=&quot;flex flex-col items-center justify-center h-full text-center p-8&quot;&gt;&lt;div className=&quot;bg-yellow-50 p-6 rounded-full mb-4&quot;&gt;&lt;Folder size={48} className=&quot;text-yellow-600&quot; /&gt;&lt;/div&gt;&lt;h3 className=&quot;text-xl font-bold text-slate-800 mb-2&quot;&gt;Đường dẫn Thư mục&lt;/h3&gt;&lt;a href={file.url} target=&quot;_blank&quot; rel=&quot;noopener noreferrer&quot; className=&quot;bg-blue-600 text-white px-6 py-3 rounded-lg font-medium hover:bg-blue-700 transition flex items-center gap-2&quot;&gt;&lt;ExternalLink size={20} /&gt; Mở Thư mục&lt;/a&gt;&lt;/div&gt; : 
+                &lt;div className=&quot;w-full h-full bg-white relative&quot;&gt;&lt;iframe src={embedUrl} className=&quot;w-full h-full border-none&quot; title=&quot;Live Preview&quot; allow=&quot;autoplay&quot;&gt;&lt;/iframe&gt;&lt;/div&gt;
+            ) : error ? &lt;div className=&quot;flex flex-col items-center justify-center h-full text-center p-4&quot;&gt;&lt;p className=&quot;text-red-500&quot;&gt;{error}&lt;/p&gt;&lt;/div&gt; : isPdf ? &lt;PdfViewer file={file} /&gt; : &lt;div ref={containerRef} className=&quot;w-full h-full overflow-y-auto bg-slate-100 flex justify-center docx-wrapper&quot; style={{ padding: &#039;20px&#039; }}&gt;&lt;/div&gt;}
+        &lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  );
+};
+
+export default function ProcessManager() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [files, setFiles] = useState([]);
+  const [searchQuery, setSearchQuery] = useState(&#039;&#039;);
+  const [viewMode, setViewMode] = useState(&#039;list&#039;);
+  const [previewFile, setPreviewFile] = useState(null);
+  const [activeCategory, setActiveCategory] = useState(&#039;all&#039;);
+  
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [linkModalOpen, setLinkModalOpen] = useState(false);
+  const [editingFile, setEditingFile] = useState(null);
+  const replaceInputRef = useRef(null);
+  const [replacingFileId, setReplacingFileId] = useState(null);
+
+  useEffect(() =&gt; {
+    [&quot;https://unpkg.com/jszip/dist/jszip.min.js&quot;, &quot;https://unpkg.com/docx-preview/dist/docx-preview.min.js&quot;, &quot;https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js&quot;, &quot;https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js&quot;]
+    .forEach(src =&gt; { const script = document.createElement(&#039;script&#039;); script.src = src; document.body.appendChild(script); });
+  }, []);
+
+  const guessCategory = (filename) =&gt; {
+    let category = &#039;CHUNG&#039;;
+    const parts = filename.split(/[_\-\s]/);
+    if (parts.length &gt; 1) category = parts[0].toUpperCase();
+    return category.replace(/[^a-zA-Z0-9&Agrave;-ỹ]/g, &quot;&quot;).substring(0, 10) || &#039;KH&Aacute;C&#039;;
+  };
+
+  const mergeNewFiles = (newFilesList) =&gt; {
+    setFiles(prev =&gt; {
+        const nextFiles = [...prev];
+        newFilesList.forEach(newFile =&gt; {
+            const index = nextFiles.findIndex(f =&gt; (newFile.isLink &amp;&amp; f.isLink &amp;&amp; f.url === newFile.url) || (!newFile.isLink &amp;&amp; !f.isLink &amp;&amp; f.name === newFile.name));
+            if (index !== -1) {
+                nextFiles[index] = { ...newFile, id: nextFiles[index].id, category: newFile.category === &#039;KH&Aacute;C&#039; || newFile.category === &#039;CHUNG&#039; ? nextFiles[index].category : newFile.category };
+            } else {
+                nextFiles.push(newFile);
+            }
+        });
+        return nextFiles;
+    });
+  };
+
+  // Logic Đồng bộ từ Sheet: X&oacute;a cũ (theo sheetUrl), nạp mới
+  const syncSheetFiles = (sheetUrl, newItems) =&gt; {
+      setFiles(prev =&gt; {
+          // Lọc bỏ tất cả c&aacute;c items cũ c&oacute; sourceSheet tr&ugrave;ng với sheetUrl đang nhập
+          const cleanedFiles = prev.filter(f =&gt; f.sourceSheet !== sheetUrl);
+          // Th&ecirc;m danh s&aacute;ch mới v&agrave;o
+          return [...cleanedFiles, ...newItems];
+      });
+  };
+
+  const handleFileUpload = (event) =&gt; {
+    const uploadedFiles = Array.from(event.target.files).filter(file =&gt; [&#039;docx&#039;, &#039;doc&#039;, &#039;pdf&#039;, &#039;xlsx&#039;, &#039;xls&#039;, &#039;csv&#039;].includes(file.name.split(&#039;.&#039;).pop().toLowerCase()));
+    const filesWithId = uploadedFiles.map((file, index) =&gt; {
+        file.id = `f-${Date.now()}-${index}`;
+        file.category = guessCategory(file.name);
+        return file;
+    });
+    mergeNewFiles(filesWithId);
+  };
+
+  const handleAddLink = (linkData) =&gt; {
+    mergeNewFiles([{ id: `l-${Date.now()}`, ...linkData, isLink: true, size: 0, lastModified: Date.now() }]);
+  };
+  
+  const handleAddBulk = (newItems) =&gt; mergeNewFiles(newItems);
+
+  const handleDelete = (e, fileId) =&gt; {
+    e.preventDefault(); e.stopPropagation(); // Chặn sự kiện triệt để
+    if (window.confirm(&#039;Bạn c&oacute; chắc chắn muốn x&oacute;a quy tr&igrave;nh n&agrave;y?&#039;)) {
+        setFiles(prev =&gt; prev.filter(f =&gt; f.id !== fileId));
+        if (previewFile &amp;&amp; previewFile.id === fileId) setPreviewFile(null);
+    }
+  };
+
+  const handleSaveEdit = (id, tag, link) =&gt; {
+    setFiles(prev =&gt; prev.map(f =&gt; f.id === id ? {...f, category: tag ? tag.toUpperCase().trim() : &#039;CHUNG&#039;, url: link ? link.trim() : &#039;&#039;, linkType: (f.isLink &amp;&amp; link) ? analyzeLinkType(link) : f.linkType} : f));
+    setEditModalOpen(false); setEditingFile(null);
+  };
+
+  const handleReplaceFile = (event) =&gt; {
+    const newFile = event.target.files[0];
+    if (!newFile || !replacingFileId) return;
+    setFiles(prev =&gt; prev.map(f =&gt; f.id === replacingFileId ? { ...newFile, id: f.id, category: f.category } : f));
+    setReplacingFileId(null); event.target.value = null; alert(&quot;Đ&atilde; thay thế nội dung file th&agrave;nh c&ocirc;ng!&quot;);
+  };
+
+  const handleDownload = (e, file) =&gt; {
+      e.stopPropagation();
+      if (file.isLink) {
+          const fileId = getDriveId(file.url);
+          if (fileId) {
+              window.open(`https://drive.google.com/uc?export=download&amp;id=${fileId}`, &#039;_blank&#039;);
+          } else {
+              window.open(file.url, &#039;_blank&#039;);
+          }
+      } else {
+          const url = URL.createObjectURL(file);
+          const a = document.createElement(&#039;a&#039;);
+          a.href = url;
+          a.download = file.name;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+      }
+  };
+
+  const filteredFiles = useMemo(() =&gt; {
+    return files.filter(file =&gt; {
+      const matchesSearch = file.name?.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesCategory = activeCategory === &#039;all&#039; || file.category === activeCategory;
+      return matchesSearch &amp;&amp; matchesCategory;
+    });
+  }, [files, searchQuery, activeCategory]);
+
+  const categories = useMemo(() =&gt; {
+    const cats = new Set(files.map(f =&gt; f.category));
+    return [&#039;all&#039;, ...Array.from(cats).sort()];
+  }, [files]);
+
+  const getFileIcon = (file) =&gt; {
+      if (file.isLink) {
+          if (file.linkType === &#039;error&#039;) return &lt;AlertTriangle className=&quot;text-red-500&quot; size={viewMode === &#039;list&#039; ? 20 : 28} /&gt;;
+          if (file.linkType === &#039;folder&#039;) return &lt;Folder className=&quot;text-yellow-500&quot; size={viewMode === &#039;list&#039; ? 20 : 28} /&gt;;
+          return &lt;LinkIcon className=&quot;text-purple-600&quot; size={viewMode === &#039;list&#039; ? 20 : 28} /&gt;;
+      }
+      const ext = file.name.split(&#039;.&#039;).pop().toLowerCase();
+      if (ext === &#039;pdf&#039;) return &lt;FileText className=&quot;text-red-500&quot; size={viewMode === &#039;list&#039; ? 20 : 28} /&gt;;
+      if ([&#039;xlsx&#039;, &#039;xls&#039;, &#039;csv&#039;].includes(ext)) return &lt;FileSpreadsheet className=&quot;text-green-600&quot; size={viewMode === &#039;list&#039; ? 20 : 28} /&gt;;
+      return &lt;FileText className=&quot;text-blue-600&quot; size={viewMode === &#039;list&#039; ? 20 : 28} /&gt;;
+  };
+
+  if (!isAuthenticated) return &lt;LoginScreen onLogin={() =&gt; setIsAuthenticated(true)} /&gt;;
+
+  return (
+    &lt;div className=&quot;min-h-screen bg-slate-50 text-slate-800 font-sans&quot;&gt;
+      &lt;input type=&quot;file&quot; ref={replaceInputRef} className=&quot;hidden&quot; onChange={handleReplaceFile} accept=&quot;.docx,.pdf,.xlsx,.xls,.csv&quot;/&gt;
+
+      &lt;header className=&quot;bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm&quot;&gt;
+        &lt;div className=&quot;max-w-7xl mx-auto px-4 h-16 flex items-center justify-between gap-4&quot;&gt;
+          &lt;div className=&quot;flex items-center gap-2&quot;&gt;
+            &lt;div className=&quot;bg-blue-600 text-white p-2 rounded-lg&quot;&gt;&lt;FileText size={20} /&gt;&lt;/div&gt;
+            &lt;h1 className=&quot;text-lg font-bold hidden md:block&quot;&gt;Quản L&yacute; Quy Tr&igrave;nh (Admin)&lt;/h1&gt;
+          &lt;/div&gt;
+
+          &lt;div className=&quot;flex-1 max-w-2xl relative&quot;&gt;
+            &lt;Search className=&quot;absolute left-3 top-1/2 -translate-y-1/2 text-slate-400&quot; size={18} /&gt;
+            &lt;input type=&quot;text&quot; placeholder=&quot;T&igrave;m kiếm...&quot; className=&quot;w-full pl-10 pr-4 py-2 bg-slate-100 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none&quot; value={searchQuery} onChange={(e) =&gt; setSearchQuery(e.target.value)} /&gt;
+          &lt;/div&gt;
+
+          &lt;div className=&quot;flex items-center gap-2&quot;&gt;
+             &lt;button onClick={() =&gt; setLinkModalOpen(true)} className=&quot;bg-purple-100 text-purple-700 hover:bg-purple-200 px-3 py-2 rounded-lg text-sm font-medium flex items-center gap-2 border border-purple-200&quot;&gt;
+                &lt;LinkIcon size={16}/&gt; &lt;span className=&quot;hidden sm:inline&quot;&gt;Th&ecirc;m Link / Sheet&lt;/span&gt;
+             &lt;/button&gt;
+            &lt;label className=&quot;cursor-pointer bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg text-sm font-medium flex items-center gap-2 shadow-sm&quot;&gt;
+              &lt;FolderOpen size={16} /&gt; &lt;span className=&quot;hidden sm:inline&quot;&gt;Chọn Folder PC&lt;/span&gt;
+              &lt;input type=&quot;file&quot; webkitdirectory=&quot;true&quot; directory=&quot;true&quot; multiple className=&quot;hidden&quot; onChange={handleFileUpload}/&gt;
+            &lt;/label&gt;
+            &lt;div className=&quot;flex bg-slate-100 p-1 rounded-lg ml-2&quot;&gt;
+                &lt;button onClick={() =&gt; setViewMode(&#039;list&#039;)} className={`p-1.5 rounded ${viewMode === &#039;list&#039; ? &#039;bg-white shadow text-blue-600&#039; : &#039;text-slate-500&#039;}`}&gt;&lt;List size={18}/&gt;&lt;/button&gt;
+                &lt;button onClick={() =&gt; setViewMode(&#039;grid&#039;)} className={`p-1.5 rounded ${viewMode === &#039;grid&#039; ? &#039;bg-white shadow text-blue-600&#039; : &#039;text-slate-500&#039;}`}&gt;&lt;Grid size={18}/&gt;&lt;/button&gt;
+            &lt;/div&gt;
+          &lt;/div&gt;
+        &lt;/div&gt;
+      &lt;/header&gt;
+
+      &lt;main className=&quot;max-w-7xl mx-auto px-4 py-6&quot;&gt;
+        {files.length === 0 ? (
+          &lt;div className=&quot;flex flex-col items-center justify-center h-[60vh] text-slate-400&quot;&gt;
+             &lt;div className=&quot;bg-white p-8 rounded-2xl shadow-lg border border-slate-100 text-center max-w-lg&quot;&gt;
+                &lt;Lock className=&quot;w-12 h-12 text-blue-500 mx-auto mb-4&quot; /&gt;
+                &lt;h2 className=&quot;text-xl font-bold text-slate-800&quot;&gt;Hệ thống sẵn s&agrave;ng&lt;/h2&gt;
+                &lt;div className=&quot;text-sm text-left bg-slate-50 p-4 rounded-lg border border-slate-200 mb-6 space-y-2&quot;&gt;
+                    &lt;p className=&quot;flex items-start gap-2&quot;&gt;&lt;FolderOpen size={16} className=&quot;text-blue-600 shrink-0 mt-0.5&quot;/&gt; &lt;strong&gt;C&aacute;ch 1:&lt;/strong&gt; Chọn Folder từ m&aacute;y t&iacute;nh (Nếu đ&atilde; c&agrave;i Google Drive Desktop, h&atilde;y chọn ổ G:). Tự động qu&eacute;t file.&lt;/p&gt;
+                    &lt;p className=&quot;flex items-start gap-2&quot;&gt;&lt;Table size={16} className=&quot;text-green-600 shrink-0 mt-0.5&quot;/&gt; &lt;strong&gt;C&aacute;ch 2:&lt;/strong&gt; Nhập link Google Sheet (Cột A: T&ecirc;n, B: Tag, C: Link) để đồng bộ h&agrave;ng loạt.&lt;/p&gt;
+                &lt;/div&gt;
+                &lt;div className=&quot;flex justify-center gap-3&quot;&gt;
+                    &lt;label className=&quot;cursor-pointer bg-blue-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-blue-700 transition&quot;&gt;
+                        Chọn Folder (G:)
+                        &lt;input type=&quot;file&quot; webkitdirectory=&quot;true&quot; directory=&quot;true&quot; multiple className=&quot;hidden&quot; onChange={handleFileUpload}/&gt;
+                    &lt;/label&gt;
+                    &lt;button onClick={() =&gt; setLinkModalOpen(true)} className=&quot;bg-green-100 text-green-700 px-6 py-2 rounded-lg font-bold hover:bg-green-200 flex items-center gap-2&quot;&gt;
+                        &lt;LinkIcon size={18}/&gt; Th&ecirc;m Link / Sheet
+                    &lt;/button&gt;
+                &lt;/div&gt;
+             &lt;/div&gt;
+          &lt;/div&gt;
+        ) : (
+          &lt;div className=&quot;flex flex-col md:flex-row gap-6 items-start&quot;&gt;
+            &lt;aside className=&quot;w-full md:w-56 shrink-0 sticky top-24 bg-white rounded-xl shadow-sm border border-slate-200 p-3&quot;&gt;
+              &lt;h3 className=&quot;font-bold text-slate-700 mb-3 px-2 flex items-center gap-2&quot;&gt;&lt;Tag size={16}/&gt; Ph&acirc;n loại&lt;/h3&gt;
+              &lt;div className=&quot;flex flex-wrap md:flex-col gap-1 max-h-[70vh] overflow-y-auto custom-scrollbar&quot;&gt;
+                {categories.map(cat =&gt; (
+                  &lt;button key={cat} onClick={() =&gt; setActiveCategory(cat)} 
+                    className={`text-left px-3 py-2 rounded-lg text-sm flex justify-between ${activeCategory === cat ? &#039;bg-blue-600 text-white&#039; : &#039;hover:bg-slate-100&#039;}`}
+                  &gt;
+                    &lt;span className=&quot;truncate w-32&quot;&gt;{cat === &#039;all&#039; ? &#039;Tất cả&#039; : cat}&lt;/span&gt;
+                    &lt;span className=&quot;opacity-70 text-xs bg-black/10 px-1.5 rounded&quot;&gt;{files.filter(f =&gt; f.category === cat).length}&lt;/span&gt;
+                  &lt;/button&gt;
+                ))}
+              &lt;/div&gt;
+            &lt;/aside&gt;
+
+            &lt;div className=&quot;flex-1 min-w-0&quot;&gt;
+               &lt;div className=&quot;mb-4 text-sm text-slate-500 flex justify-between items-center&quot;&gt;
+                  &lt;span&gt;T&igrave;m thấy &lt;b&gt;{filteredFiles.length}&lt;/b&gt; kết quả&lt;/span&gt;
+                  {activeCategory !== &#039;all&#039; &amp;&amp; &lt;span className=&quot;bg-blue-100 text-blue-700 px-2 py-0.5 rounded text-xs&quot;&gt;Lọc theo: {activeCategory}&lt;/span&gt;}
+               &lt;/div&gt;
+
+              &lt;div className={viewMode === &#039;grid&#039; ? &quot;grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4&quot; : &quot;flex flex-col gap-2&quot;}&gt;
+                {filteredFiles.map((file) =&gt; (
+                  &lt;div key={file.id} onClick={() =&gt; setPreviewFile(file)}
+                    className={`group bg-white border border-slate-200 hover:border-blue-500 hover:shadow-md transition cursor-pointer rounded-lg relative ${viewMode === &#039;list&#039; ? &#039;flex items-center p-3 gap-4&#039; : &#039;p-4 flex flex-col gap-3&#039;}`}
+                  &gt;
+                    &lt;div className={`flex items-center justify-center rounded-lg bg-slate-50 shrink-0 ${viewMode === &#039;list&#039; ? &#039;w-10 h-10&#039; : &#039;w-12 h-12 self-start&#039;}`}&gt;
+                      {getFileIcon(file)}
+                    &lt;/div&gt;
+
+                    &lt;div className=&quot;flex-1 min-w-0&quot;&gt;
+                      &lt;h4 className={`font-semibold text-sm truncate ${file.linkType === &#039;error&#039; ? &#039;text-red-600&#039; : &#039;text-slate-800&#039;}`} title={file.name}&gt;
+                          {file.name || &quot;Kh&ocirc;ng t&ecirc;n&quot;}
+                      &lt;/h4&gt;
+                      &lt;div className=&quot;flex items-center gap-2 text-xs text-slate-500 mt-1&quot;&gt;
+                        &lt;span className={`px-2 py-0.5 rounded uppercase ${file.linkType === &#039;error&#039; ? &#039;bg-red-100 text-red-700&#039; : &#039;bg-slate-100&#039;}`}&gt;
+                            {file.category}
+                        &lt;/span&gt;
+                        {file.isLink ? (
+                            file.linkType === &#039;error&#039; ? &lt;span className=&quot;text-red-500 font-bold&quot;&gt;Lỗi Link&lt;/span&gt; : &lt;span className=&quot;text-purple-600 flex items-center gap-0.5&quot;&gt;&lt;ExternalLink size={10}/&gt; Online&lt;/span&gt;
+                        ) : &lt;span&gt;{(file.size/1024).toFixed(0)} KB&lt;/span&gt;}
+                      &lt;/div&gt;
+                    &lt;/div&gt;
+
+                    &lt;div className={`flex items-center gap-1 ${viewMode !== &#039;list&#039; &amp;&amp; &#039;absolute top-2 right-2 opacity-0 group-hover:opacity-100&#039;} transition bg-white/95 p-1 rounded shadow-sm z-20`}&gt;
+                      &lt;button 
+                        onClick={(e) =&gt; handleDownload(e, file)} 
+                        className=&quot;p-1.5 hover:bg-slate-100 rounded text-slate-600&quot;
+                        title=&quot;Tải xuống&quot;
+                      &gt;
+                        &lt;Download size={16}/&gt;
+                      &lt;/button&gt;
+                      &lt;button 
+                        onClick={(e) =&gt; { e.stopPropagation(); setEditingFile(file); setEditModalOpen(true); }} 
+                        className=&quot;p-1.5 hover:bg-slate-100 rounded text-blue-600&quot;
+                        title=&quot;Sửa&quot;
+                      &gt;
+                        &lt;Edit2 size={16}/&gt;
+                      &lt;/button&gt;
+                      {!file.isLink &amp;&amp; (
+                          &lt;button 
+                            onClick={(e) =&gt; { e.stopPropagation(); setReplacingFileId(file.id); replaceInputRef.current.click(); }} 
+                            className=&quot;p-1.5 hover:bg-slate-100 rounded text-green-600&quot;
+                            title=&quot;Thay file&quot;
+                          &gt;
+                            &lt;RefreshCw size={16}/&gt;
+                          &lt;/button&gt;
+                      )}
+                      &lt;button 
+                        onClick={(e) =&gt; handleDelete(e, file.id)}
+                        className=&quot;p-1.5 hover:bg-red-50 rounded text-red-600&quot;
+                        title=&quot;X&oacute;a&quot;
+                      &gt;
+                        &lt;Trash2 size={16}/&gt;
+                      &lt;/button&gt;
+                    &lt;/div&gt;
+                  &lt;/div&gt;
+                ))}
+              &lt;/div&gt;
+            &lt;/div&gt;
+          &lt;/div&gt;
+        )}
+      &lt;/main&gt;
+
+      {previewFile &amp;&amp; &lt;FilePreviewModal file={previewFile} onClose={() =&gt; setPreviewFile(null)} /&gt;}
+      
+      &lt;EditModal 
+        file={editingFile} 
+        isOpen={editModalOpen} 
+        onClose={() =&gt; setEditModalOpen(false)} 
+        onSave={handleSaveEdit} 
+      /&gt;
+      
+      &lt;AddLinkModal 
+        isOpen={linkModalOpen} 
+        onClose={() =&gt; setLinkModalOpen(false)} 
+        onAdd={handleAddLink} 
+        onAddBulk={handleAddBulk}
+        onSyncSheet={syncSheetFiles}
+      /&gt;
+    &lt;/div&gt;
+  );
+}
